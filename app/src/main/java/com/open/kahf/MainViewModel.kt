@@ -2,8 +2,6 @@ package com.open.kahf
 
 import android.content.Context
 import android.provider.Settings
-import android.text.TextUtils
-import android.view.accessibility.AccessibilityManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
@@ -75,7 +73,6 @@ class MainViewModel(private val dnsRepository: DnsStatusRepository, private val 
     }
 
     fun checkAccessibilityPermission(context: Context) {
-        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
         val enabledServices = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
         _isAccessibilityEnabled.value = enabledServices?.contains(context.packageName) == true
     }
