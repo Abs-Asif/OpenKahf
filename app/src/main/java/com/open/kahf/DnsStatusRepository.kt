@@ -20,7 +20,7 @@ class DnsStatusRepository {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext false
                 val body = response.body?.string() ?: ""
-                body.contains("Congratulations! DNS for Family is working properly", ignoreCase = true)
+                body.contains("Congratulations! DNS for Family is working properly on your device.", ignoreCase = true)
             }
         } catch (e: IOException) {
             false
