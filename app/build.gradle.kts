@@ -11,8 +11,8 @@ android {
         applicationId = "com.open.kahf"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 10004101
+        versionName = "1.0.0.04.10.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
