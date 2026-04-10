@@ -4,7 +4,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.IOException
+import java.net.URLEncoder
 
 class DnsStatusRepository {
     private val client = OkHttpClient()
@@ -18,15 +20,37 @@ class DnsStatusRepository {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext false
                 val body = response.body?.string() ?: ""
-                // The website likely returns "Yes" or something similar if active.
-                // For now, we'll check if it contains "Yes" or "Active"
-                // Actually, let's just check if the request succeeds and the body is not empty as a placeholder
-                // if we don't know the exact response format.
-                // Assuming it returns text containing "Yes" when active.
-                body.contains("Yes", ignoreCase = true)
+                body.contains("Congratulations! DNS for Family is working properly", ignoreCase = true)
             }
         } catch (e: IOException) {
             false
+        }
+    }
+
+    suspend fun checkHost(hostname: String): Boolean? = withContext(Dispatchers.IO) {
+        val encodedHostname = try {
+            URLEncoder.encode(hostname, "UTF-8")
+        } catch (e: Exception) {
+            hostname
+        }
+        val url = "https://dnsforfamily.com/api/checkHost?hostnames[]=$encodedHostname"
+        val request = Request.Builder()
+            .url(url)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                val json = JSONObject(body)
+                if (json.optBoolean("success")) {
+                    val result = json.optJSONObject("result")
+                    return@withContext result?.optBoolean(hostname)
+                }
+                null
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 }
