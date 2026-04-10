@@ -41,19 +41,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            val context = LocalContext.current
-            val dnsRepo = remember { DnsStatusRepository() }
-            val settingsRepo = remember { SettingsRepository(context) }
-            viewModel = viewModel(
-                factory = object : ViewModelProvider.Factory {
-                    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                        return MainViewModel(dnsRepo, settingsRepo) as T
-                    }
-                }
-            )
 
-            OpenKahfApp(viewModel)
+        val dnsRepo = DnsStatusRepository()
+        val settingsRepo = SettingsRepository(applicationContext)
+        viewModel = ViewModelProvider(
+            this,
+            object : ViewModelProvider.Factory {
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return MainViewModel(dnsRepo, settingsRepo) as T
+                }
+            }
+        )[MainViewModel::class.java]
+
+        setContent {
+            MaterialTheme {
+                OpenKahfApp(viewModel)
+            }
         }
     }
 
