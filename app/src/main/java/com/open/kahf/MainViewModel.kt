@@ -4,6 +4,7 @@ import android.app.usage.NetworkStats
 import android.app.usage.NetworkStatsManager
 import android.app.usage.UsageStatsManager
 import android.content.Context
+import android.graphics.drawable.Drawable
 import android.net.ConnectivityManager
 import android.os.RemoteException
 import android.provider.Settings
@@ -12,6 +13,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -19,7 +21,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class MainViewModel(
@@ -53,11 +57,22 @@ class MainViewModel(
     private val _prayerTimes = MutableStateFlow<Map<String, String>?>(null)
     val prayerTimes: StateFlow<Map<String, String>?> = _prayerTimes.asStateFlow()
 
+    private val _currentWaqtName = MutableStateFlow("")
+    val currentWaqtName: StateFlow<String> = _currentWaqtName.asStateFlow()
+
+    private val _waqtRemainingTime = MutableStateFlow("")
+    val waqtRemainingTime: StateFlow<String> = _waqtRemainingTime.asStateFlow()
+
+    private val _waqtProgress = MutableStateFlow(0f)
+    val waqtProgress: StateFlow<Float> = _waqtProgress.asStateFlow()
+
     private val _isUsagePermissionGranted = MutableStateFlow(false)
     val isUsagePermissionGranted: StateFlow<Boolean> = _isUsagePermissionGranted.asStateFlow()
 
     private val _appUsageData = MutableStateFlow<List<AppUsageInfo>>(emptyList())
     val appUsageData: StateFlow<List<AppUsageInfo>> = _appUsageData.asStateFlow()
+
+    private var waqtUpdateJob: Job? = null
 
     init {
         startPeriodicCheck()
@@ -70,7 +85,96 @@ class MainViewModel(
             // Dhaka coordinates
             val lat = 23.8103
             val lon = 90.4125
-            _prayerTimes.value = prayerTimesRepository.getPrayerTimes(lat, lon)
+            val times = prayerTimesRepository.getPrayerTimes(lat, lon)
+            _prayerTimes.value = times
+            if (times != null) {
+                startWaqtUpdates()
+            }
+        }
+    }
+
+    private fun startWaqtUpdates() {
+        waqtUpdateJob?.cancel()
+        waqtUpdateJob = viewModelScope.launch {
+            while (true) {
+                updateCurrentWaqt()
+                delay(1000)
+            }
+        }
+    }
+
+    private fun updateCurrentWaqt() {
+        val times = _prayerTimes.value ?: return
+        val waqts = listOf("Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha")
+
+        val now = Calendar.getInstance()
+        val nowMinutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+        val nowSeconds = nowMinutes * 60 + now.get(Calendar.SECOND)
+
+        fun timeToSeconds(time: String): Int {
+            val parts = time.split(":")
+            if (parts.size != 2) return 0
+            return parts[0].toInt() * 3600 + parts[1].toInt() * 60
+        }
+
+        var currentWaqt = ""
+        var nextWaqt = ""
+        var currentWaqtStartTime = 0
+        var nextWaqtStartTime = 0
+
+        for (i in waqts.indices) {
+            val waqt = waqts[i]
+            val startTime = timeToSeconds(times[waqt] ?: "00:00")
+            val nextIndex = (i + 1) % waqts.size
+            var nextStartTime = timeToSeconds(times[waqts[nextIndex]] ?: "00:00")
+
+            if (nextStartTime <= startTime) {
+                // Next waqt is the next day
+                if (nowSeconds >= startTime || nowSeconds < nextStartTime) {
+                    currentWaqt = waqt
+                    nextWaqt = waqts[nextIndex]
+                    currentWaqtStartTime = startTime
+                    nextWaqtStartTime = nextStartTime
+                    break
+                }
+            } else {
+                if (nowSeconds in startTime until nextStartTime) {
+                    currentWaqt = waqt
+                    nextWaqt = waqts[nextIndex]
+                    currentWaqtStartTime = startTime
+                    nextWaqtStartTime = nextStartTime
+                    break
+                }
+            }
+        }
+
+        if (currentWaqt.isNotEmpty()) {
+            _currentWaqtName.value = currentWaqt
+
+            var totalDuration = nextWaqtStartTime - currentWaqtStartTime
+            if (totalDuration < 0) totalDuration += 24 * 3600
+
+            var elapsed = nowSeconds - currentWaqtStartTime
+            if (elapsed < 0) elapsed += 24 * 3600
+
+            val remaining = totalDuration - elapsed
+            val hours = remaining / 3600
+            val minutes = (remaining % 3600) / 60
+            val seconds = remaining % 60
+
+            _waqtRemainingTime.value = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+            _waqtProgress.value = if (totalDuration > 0) elapsed.toFloat() / totalDuration.toFloat() else 0f
+        }
+    }
+
+    fun formatTo12Hour(time: String): String {
+        return try {
+            val sdf24 = SimpleDateFormat("HH:mm", Locale.getDefault())
+            val sdf12 = SimpleDateFormat("hh:mm a", Locale.getDefault())
+            val date = sdf24.parse(time)
+            if (date != null) sdf12.format(date) else time
+        } catch (e: Exception) {
+            time
         }
     }
 
@@ -155,20 +259,43 @@ class MainViewModel(
         viewModelScope.launch {
             val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val networkStatsManager = context.getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
+            val packageManager = context.packageManager
 
             val endTime = System.currentTimeMillis()
-            val startTime = endTime - 24 * 60 * 60 * 1000 // Last 24 hours
+            val startTime = endTime - 7 * 24 * 60 * 60 * 1000 // Last 7 days
 
             val usageStats = usageStatsManager.queryAndAggregateUsageStats(startTime, endTime)
 
             val usageList = usageStats.values
                 .filter { it.totalTimeInForeground > 0 }
                 .map { stat ->
+                    val appName = try {
+                        val appInfo = packageManager.getApplicationInfo(stat.packageName, 0)
+                        packageManager.getApplicationLabel(appInfo).toString()
+                    } catch (e: Exception) {
+                        stat.packageName.split(".").last()
+                    }
+                    val icon = try {
+                        packageManager.getApplicationIcon(stat.packageName)
+                    } catch (e: Exception) {
+                        null
+                    }
+
                     val networkUsage = getNetworkUsageForPackage(context, networkStatsManager, stat.packageName, startTime, endTime)
-                    AppUsageInfo(stat.packageName, stat.totalTimeInForeground, networkUsage)
+
+                    val dailyUsage = mutableListOf<Long>()
+                    for (i in 6 downTo 0) {
+                        val dayEnd = endTime - i * 24 * 60 * 60 * 1000
+                        val dayStart = dayEnd - 24 * 60 * 60 * 1000
+                        val dailyStats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, dayStart, dayEnd)
+                        val dayTime = dailyStats.find { it.packageName == stat.packageName }?.totalTimeInForeground ?: 0L
+                        dailyUsage.add(dayTime)
+                    }
+
+                    AppUsageInfo(stat.packageName, appName, icon, stat.totalTimeInForeground, networkUsage, dailyUsage)
                 }
                 .sortedByDescending { it.totalTime }
-                .take(10)
+                .take(15)
 
             _appUsageData.value = usageList
         }
@@ -281,4 +408,11 @@ class MainViewModel(
     }
 }
 
-data class AppUsageInfo(val packageName: String, val totalTime: Long, val networkUsage: Long)
+data class AppUsageInfo(
+    val packageName: String,
+    val appName: String,
+    val icon: Drawable?,
+    val totalTime: Long,
+    val networkUsage: Long,
+    val dailyUsage: List<Long>
+)

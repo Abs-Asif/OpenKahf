@@ -9,12 +9,21 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -28,6 +37,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -38,18 +48,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -74,6 +88,19 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
+                val context = LocalContext.current
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { }
+
+                LaunchedEffect(Unit) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                }
+
                 OpenKahfApp(viewModel)
             }
         }
@@ -92,9 +119,14 @@ class MainActivity : ComponentActivity() {
 fun OpenKahfApp(viewModel: MainViewModel) {
     var currentScreen by remember { mutableStateOf("home") }
 
+    BackHandler(enabled = currentScreen != "home") {
+        currentScreen = "home"
+    }
+
     Scaffold(
         bottomBar = {
             NavigationBar(
+                modifier = Modifier.height(64.dp),
                 containerColor = Color.White,
                 contentColor = Color(0xFF4A2C7E)
             ) {
@@ -102,22 +134,43 @@ fun OpenKahfApp(viewModel: MainViewModel) {
                     selected = currentScreen == "home",
                     onClick = { currentScreen = "home" },
                     icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                    label = { Text("Home") }
+                    label = { Text("Home", fontSize = 10.sp) }
+                )
+                NavigationBarItem(
+                    selected = currentScreen == "prayer",
+                    onClick = { currentScreen = "prayer" },
+                    icon = { Icon(painterResource(android.R.drawable.ic_lock_idle_alarm), contentDescription = "Prayer", modifier = Modifier.size(24.dp)) },
+                    label = { Text("Prayer", fontSize = 10.sp) }
+                )
+                NavigationBarItem(
+                    selected = currentScreen == "usage",
+                    onClick = { currentScreen = "usage" },
+                    icon = { Icon(Icons.Default.DateRange, contentDescription = "Usage") },
+                    label = { Text("Usage", fontSize = 10.sp) }
                 )
                 NavigationBarItem(
                     selected = currentScreen == "settings",
                     onClick = { currentScreen = "settings" },
                     icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                    label = { Text("Settings") }
+                    label = { Text("Settings", fontSize = 10.sp) }
                 )
             }
         }
     ) { innerPadding ->
         Box(modifier = Modifier.padding(innerPadding)) {
-            if (currentScreen == "home") {
-                HomeScreen(viewModel)
-            } else {
-                SettingsScreen(viewModel)
+            AnimatedContent(
+                targetState = currentScreen,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+                },
+                label = "ScreenTransition"
+            ) { screen ->
+                when (screen) {
+                    "home" -> HomeScreen(viewModel)
+                    "prayer" -> PrayerScreen(viewModel)
+                    "usage" -> UsageScreen(viewModel)
+                    "settings" -> SettingsScreen(viewModel)
+                }
             }
         }
     }
@@ -129,9 +182,6 @@ fun HomeScreen(viewModel: MainViewModel) {
     val searchQuery by viewModel.searchQuery.collectAsState()
     val blocklistResult by viewModel.blocklistResult.collectAsState()
     val isSearching by viewModel.isSearching.collectAsState()
-    val prayerTimes by viewModel.prayerTimes.collectAsState()
-    val isUsagePermissionGranted by viewModel.isUsagePermissionGranted.collectAsState()
-    val appUsageData by viewModel.appUsageData.collectAsState()
 
     val context = LocalContext.current
 
@@ -157,7 +207,7 @@ fun HomeScreen(viewModel: MainViewModel) {
             Spacer(modifier = Modifier.height(32.dp))
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().animateContentSize(),
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = if (isDnsActive) Color(0xFFF0F9F0) else Color(0xFFFFF5F5)
@@ -207,32 +257,6 @@ fun HomeScreen(viewModel: MainViewModel) {
             Spacer(modifier = Modifier.height(32.dp))
 
             Text(
-                text = "App Usage",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start),
-                color = Color(0xFF1A1C1E)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (!isUsagePermissionGranted) {
-                PermissionItem(
-                    title = "Usage Stats Permission",
-                    description = "Required to show how much time you spend on each app.",
-                    action = {
-                        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                    },
-                    actionLabel = "Grant",
-                    isEnabled = true
-                )
-            } else {
-                AppUsageList(appUsageData)
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Text(
                 text = "Blocklist Checker",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
@@ -274,7 +298,8 @@ fun HomeScreen(viewModel: MainViewModel) {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 12.dp),
+                        .padding(top = 12.dp)
+                        .animateContentSize(),
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = if (blocklistResult == true) Color(0xFFFFEBEE) else Color(0xFFE8F5E9)
@@ -292,26 +317,6 @@ fun HomeScreen(viewModel: MainViewModel) {
             Spacer(modifier = Modifier.height(32.dp))
 
             Text(
-                text = "Prayer Times",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start),
-                color = Color(0xFF1A1C1E)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (prayerTimes != null) {
-                PrayerTimesClock(prayerTimes!!)
-                Spacer(modifier = Modifier.height(24.dp))
-                PrayerTimesList(viewModel, prayerTimes!!)
-            } else {
-                CircularProgressIndicator()
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Text(
                 text = buildAnnotatedString {
                     append("Created and Maintained by ")
                     withStyle(style = SpanStyle(color = Color(0xFF4A2C7E), fontWeight = FontWeight.Bold)) {
@@ -322,6 +327,162 @@ fun HomeScreen(viewModel: MainViewModel) {
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
+        }
+    }
+}
+
+@Composable
+fun PrayerScreen(viewModel: MainViewModel) {
+    val prayerTimes by viewModel.prayerTimes.collectAsState()
+    val currentWaqtName by viewModel.currentWaqtName.collectAsState()
+    val waqtRemainingTime by viewModel.waqtRemainingTime.collectAsState()
+    val waqtProgress by viewModel.waqtProgress.collectAsState()
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.White
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Prayer Times",
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF1A1C1E)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            if (prayerTimes != null) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF4A2C7E))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = currentWaqtName,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = waqtRemainingTime,
+                            fontSize = 40.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        LinearProgressIndicator(
+                            progress = { 1f - waqtProgress },
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                            color = Color.White,
+                            trackColor = Color.White.copy(alpha = 0.3f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                PrayerTimesList(viewModel, prayerTimes!!)
+            } else {
+                CircularProgressIndicator(color = Color(0xFF4A2C7E))
+            }
+        }
+    }
+}
+
+@Composable
+fun UsageScreen(viewModel: MainViewModel) {
+    val isUsagePermissionGranted by viewModel.isUsagePermissionGranted.collectAsState()
+    val appUsageData by viewModel.appUsageData.collectAsState()
+    val context = LocalContext.current
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.White
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "App Usage",
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF1A1C1E)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            if (!isUsagePermissionGranted) {
+                PermissionItem(
+                    title = "Usage Stats Permission",
+                    description = "Required to show how much time you spend on each app.",
+                    action = {
+                        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                    },
+                    actionLabel = "Grant",
+                    isEnabled = true
+                )
+            } else {
+                UsageGraph(appUsageData)
+                Spacer(modifier = Modifier.height(24.dp))
+                AppUsageList(appUsageData)
+            }
+        }
+    }
+}
+
+@Composable
+fun UsageGraph(usageData: List<AppUsageInfo>) {
+    if (usageData.isEmpty()) return
+
+    val totalDailyUsage = LongArray(7) { 0L }
+    usageData.forEach { info ->
+        info.dailyUsage.forEachIndexed { index, time ->
+            if (index < 7) totalDailyUsage[index] += time
+        }
+    }
+
+    val maxUsage = totalDailyUsage.maxOrNull() ?: 1L
+
+    Card(
+        modifier = Modifier.fillMaxWidth().height(200.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Usage Last 7 Days", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Spacer(modifier = Modifier.height(16.dp))
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val spacing = size.width / 7
+                val maxBarHeight = size.height - 20.dp.toPx()
+
+                totalDailyUsage.forEachIndexed { index, usage ->
+                    val barHeight = (usage.toFloat() / maxUsage.toFloat()) * maxBarHeight
+                    val x = index * spacing + spacing / 4
+                    val y = size.height - barHeight
+
+                    drawRect(
+                        color = Color(0xFF4A2C7E),
+                        topLeft = Offset(x, y),
+                        size = Size(spacing / 2, barHeight)
+                    )
+                }
+            }
         }
     }
 }
@@ -536,97 +697,6 @@ fun PreventionToggleItem(
 }
 
 @Composable
-fun PrayerTimesClock(times: Map<String, String>) {
-    val prayerColors = mapOf(
-        "Fajr" to Color(0xFFB3E5FC),
-        "Sunrise" to Color(0xFFFFE082),
-        "Dhuhr" to Color(0xFFFFF176),
-        "Asr" to Color(0xFFFFB74D),
-        "Maghrib" to Color(0xFFFF8A65),
-        "Isha" to Color(0xFF9575CD)
-    )
-
-    fun timeToDegrees(time: String): Float {
-        val parts = time.split(":")
-        if (parts.size != 2) return 0f
-        val hours = parts[0].toInt()
-        val minutes = parts[1].toInt()
-        return ((hours % 24) * 15f + (minutes / 60f) * 15f) - 90f
-    }
-
-    Box(
-        modifier = Modifier
-            .size(280.dp)
-            .padding(16.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2, size.height / 2)
-            val radius = size.minDimension / 2
-
-            // Draw clock circle
-            drawCircle(
-                color = Color(0xFFF1F3F4),
-                radius = radius,
-                center = center,
-                style = Stroke(width = 2.dp.toPx())
-            )
-
-            // Draw Waqt arcs
-            val orderedWaqts = listOf("Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha")
-            for (i in orderedWaqts.indices) {
-                val currentWaqt = orderedWaqts[i]
-                val nextWaqt = if (i == orderedWaqts.size - 1) orderedWaqts[0] else orderedWaqts[i+1]
-
-                val startAngle = timeToDegrees(times[currentWaqt] ?: "00:00")
-                var endAngle = timeToDegrees(times[nextWaqt] ?: "00:00")
-
-                var sweepAngle = endAngle - startAngle
-                if (sweepAngle < 0) sweepAngle += 360f
-
-                drawArc(
-                    color = prayerColors[currentWaqt] ?: Color.Gray,
-                    startAngle = startAngle,
-                    sweepAngle = sweepAngle,
-                    useCenter = true,
-                    size = Size(radius * 2, radius * 2),
-                    topLeft = Offset(center.x - radius, center.y - radius)
-                )
-            }
-
-            // Draw clock numbers
-            val paint = android.graphics.Paint().apply {
-                color = android.graphics.Color.BLACK
-                textSize = 12.sp.toPx()
-                textAlign = android.graphics.Paint.Align.CENTER
-            }
-            for (i in 0 until 24 step 3) {
-                val angle = (i * 15f - 90f) * (Math.PI / 180f).toFloat()
-                val x = center.x + (radius + 20.dp.toPx()) * Math.cos(angle.toDouble()).toFloat()
-                val y = center.y + (radius + 20.dp.toPx()) * Math.sin(angle.toDouble()).toFloat() + (paint.textSize / 3)
-                drawContext.canvas.nativeCanvas.drawText(i.toString(), x, y, paint)
-            }
-
-            // Draw hour hand (current time)
-            val now = java.util.Calendar.getInstance()
-            val currentHour = now.get(java.util.Calendar.HOUR_OF_DAY)
-            val currentMinute = now.get(java.util.Calendar.MINUTE)
-            val currentAngle = ((currentHour * 15f + (currentMinute / 60f) * 15f) - 90f) * (Math.PI / 180f).toFloat()
-
-            drawLine(
-                color = Color.Black,
-                start = center,
-                end = Offset(
-                    center.x + (radius * 0.8f) * Math.cos(currentAngle.toDouble()).toFloat(),
-                    center.y + (radius * 0.8f) * Math.sin(currentAngle.toDouble()).toFloat()
-                ),
-                strokeWidth = 4.dp.toPx()
-            )
-        }
-    }
-}
-
-@Composable
 fun PrayerTimesList(viewModel: MainViewModel, times: Map<String, String>) {
     val waqts = listOf("Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha")
 
@@ -635,12 +705,6 @@ fun PrayerTimesList(viewModel: MainViewModel, times: Map<String, String>) {
         if (parts.size != 2) return 0
         return parts[0].toInt() * 60 + parts[1].toInt()
     }
-
-    val now = java.util.Calendar.getInstance()
-    val nowMinutes = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
-
-    var nextPrayerName = ""
-    var nextPrayerTime = ""
 
     Column(modifier = Modifier.fillMaxWidth()) {
         for (i in waqts.indices) {
@@ -657,26 +721,8 @@ fun PrayerTimesList(viewModel: MainViewModel, times: Map<String, String>) {
 
             val duration = String.format("%dh %dm", durationMinutes / 60, durationMinutes % 60)
 
-            if (nextPrayerName == "" && minutes > nowMinutes) {
-                nextPrayerName = waqt
-                nextPrayerTime = time
-            }
-
             PrayerTimeItem(viewModel, waqt, time, duration)
         }
-
-        if (nextPrayerName == "" && waqts.isNotEmpty()) {
-            nextPrayerName = waqts[0]
-            nextPrayerTime = times[nextPrayerName] ?: "--:--"
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Next Prayer: $nextPrayerName at $nextPrayerTime",
-            fontWeight = FontWeight.Bold,
-            color = Color(0xFF4A2C7E),
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
     }
 }
 
@@ -698,36 +744,40 @@ fun PrayerTimeItem(viewModel: MainViewModel, name: String, time: String, duratio
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA))
     ) {
         Row(
             modifier = Modifier
-                .padding(16.dp)
+                .padding(12.dp)
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text(text = name, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Text(text = time, fontSize = 14.sp, color = Color.Gray)
+                Text(text = name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(text = viewModel.formatTo12Hour(time), fontSize = 12.sp, color = Color.Gray)
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(text = "Duration: $duration", fontSize = 12.sp, color = Color.Gray)
-                IconButton(onClick = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = duration, fontSize = 11.sp, color = Color.Gray)
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                                viewModel.schedulePrayerNotification(context, name, time)
+                                Toast.makeText(context, "Notification scheduled for $name", Toast.LENGTH_SHORT).show()
+                            } else {
+                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                        } else {
                             viewModel.schedulePrayerNotification(context, name, time)
                             Toast.makeText(context, "Notification scheduled for $name", Toast.LENGTH_SHORT).show()
-                        } else {
-                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
-                    } else {
-                        viewModel.schedulePrayerNotification(context, name, time)
-                        Toast.makeText(context, "Notification scheduled for $name", Toast.LENGTH_SHORT).show()
-                    }
-                }) {
-                    Icon(Icons.Default.Notifications, contentDescription = "Notify", tint = Color(0xFF4A2C7E))
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(Icons.Default.Notifications, contentDescription = "Notify", tint = Color(0xFF4A2C7E), modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -759,26 +809,34 @@ fun AppUsageItem(info: AppUsageInfo) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(8.dp),
+            .padding(vertical = 4.dp)
+            .animateContentSize(),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA))
     ) {
         Row(
             modifier = Modifier
-                .padding(16.dp)
+                .padding(12.dp)
                 .fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (info.icon != null) {
+                Image(
+                    bitmap = info.icon.toBitmap().asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp).clip(CircleShape)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = info.packageName.split(".").last(),
+                    text = info.appName,
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp
                 )
                 Text(
                     text = "Data: $networkString",
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     color = Color.Gray
                 )
             }
@@ -786,7 +844,7 @@ fun AppUsageItem(info: AppUsageInfo) {
                 text = String.format("%dh %dm", hours, minutes),
                 fontSize = 14.sp,
                 color = Color(0xFF4A2C7E),
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.Bold
             )
         }
     }

@@ -13,17 +13,15 @@ class DnsStatusRepository {
 
     suspend fun isDnsForFamilyActive(): Boolean = withContext(Dispatchers.IO) {
         val request = Request.Builder()
-            .url("https://check.dnsforfamily.com/")
+            .url("http://xnxx.com")
             .build()
 
         try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext false
-                val body = response.body?.string() ?: ""
-                body.contains("Congratulations! DNS for Family is working properly on your device.", ignoreCase = true)
+                !response.isSuccessful
             }
         } catch (e: IOException) {
-            false
+            true
         }
     }
 
