@@ -6,16 +6,30 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -23,13 +37,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 
 class MainActivity : ComponentActivity() {
+    private lateinit var viewModel: MainViewModel
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             val context = LocalContext.current
             val dnsRepo = remember { DnsStatusRepository() }
             val settingsRepo = remember { SettingsRepository(context) }
-            val viewModel: MainViewModel = viewModel(
+            viewModel = viewModel(
                 factory = object : ViewModelProvider.Factory {
                     override fun <T : ViewModel> create(modelClass: Class<T>): T {
                         return MainViewModel(dnsRepo, settingsRepo) as T
@@ -40,6 +56,12 @@ class MainActivity : ComponentActivity() {
             OpenKahfApp(viewModel)
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.checkAccessibilityPermission(this)
+        viewModel.checkDnsStatus()
+    }
 }
 
 @Composable
@@ -48,136 +70,327 @@ fun OpenKahfApp(viewModel: MainViewModel) {
     val preventChange by viewModel.preventChange.collectAsState()
     val preventUninstall by viewModel.preventUninstall.collectAsState()
     val remainingTime by viewModel.remainingTime.collectAsState()
+    val isAccessibilityEnabled by viewModel.isAccessibilityEnabled.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val blocklistResult by viewModel.blocklistResult.collectAsState()
+    val isSearching by viewModel.isSearching.collectAsState()
+    val disableRequestTime by viewModel.disableRequestTime.collectAsState()
+
     val context = LocalContext.current
+    var showDialog by remember { mutableStateOf(false) }
+    var pendingToggleType by remember { mutableStateOf("") }
+
+    if (showDialog) {
+        if (remainingTime > 0) {
+            AlertDialog(
+                onDismissRequest = { /* Prevent dismiss */ },
+                title = { Text("Please Wait") },
+                text = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("You'll have to wait for a minute viewing the popup and wait.")
+                        Spacer(modifier = Modifier.height(16.dp))
+                        LinearProgressIndicator(
+                            progress = { (60L - remainingTime).toFloat() / 60f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = String.format("%02d:%02d", remainingTime / 60, remainingTime % 60),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.cancelDisableRequest()
+                            showDialog = false
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        } else if (disableRequestTime > 0) {
+            AlertDialog(
+                onDismissRequest = { /* Prevent dismiss */ },
+                title = { Text("Ready") },
+                text = { Text("The wait time is over. You can now turn off the setting.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (pendingToggleType == "change") {
+                                viewModel.togglePreventChange(false)
+                            } else if (pendingToggleType == "uninstall") {
+                                viewModel.togglePreventUninstall(false)
+                            }
+                            showDialog = false
+                            pendingToggleType = ""
+                        }
+                    ) {
+                        Text("Turn Off Now")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.cancelDisableRequest()
+                            showDialog = false
+                            pendingToggleType = ""
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
+        color = Color.White
     ) {
         Column(
             modifier = Modifier
+                .fillMaxSize()
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = "OpenKahf",
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                fontSize = 40.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFF1A1C1E)
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(32.dp))
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isDnsActive) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+                    containerColor = if (isDnsActive) Color(0xFFF0F9F0) else Color(0xFFFFF5F5)
                 )
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = if (isDnsActive) "DNS for Family: ACTIVE" else "DNS for Family: INACTIVE",
-                        fontWeight = FontWeight.Bold,
-                        color = if (isDnsActive) Color(0xFF2E7D32) else Color(0xFFC62828)
+                Row(
+                    modifier = Modifier
+                        .padding(20.dp)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .clip(CircleShape)
+                            .background(if (isDnsActive) Color(0xFF4CAF50) else Color(0xFFF44336))
                     )
-                    Button(onClick = { viewModel.checkDnsStatus() }, modifier = Modifier.padding(top = 8.dp)) {
-                        Text("Refresh Status")
-                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = "DNS Status: ${if (isDnsActive) "Active" else "Inactive"}",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF1A1C1E)
+                    )
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Text(
-                text = "Guide: Set Private DNS to dns-dot.dnsforfamily.com in your phone settings.",
-                fontSize = 14.sp
-            )
-            Button(onClick = {
-                context.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) // Closest common settings page
-            }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Text("Open DNS Settings")
+            Button(
+                onClick = {
+                    val intent = Intent("android.settings.NETWORK_OPERATOR_SETTINGS")
+                    try {
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A2C7E))
+            ) {
+                Text("Open DNS Settings", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Text(
+                text = "Blocklist Checker",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.Start),
+                color = Color(0xFF1A1C1E)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TextField(
+                value = searchQuery,
+                onValueChange = { viewModel.updateSearchQuery(it) },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search URL to check...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFFF1F3F4),
+                    unfocusedContainerColor = Color(0xFFF1F3F4),
+                    disabledContainerColor = Color(0xFFF1F3F4),
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { viewModel.searchHost() })
+            )
+
+            if (isSearching) {
+                CircularProgressIndicator(modifier = Modifier.padding(16.dp))
+            } else if (blocklistResult != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (blocklistResult == true) Color(0xFFFFEBEE) else Color(0xFFE8F5E9)
+                    )
+                ) {
+                    Text(
+                        text = if (blocklistResult == true) "Blocked" else "Accessible",
+                        modifier = Modifier.padding(16.dp),
+                        color = if (blocklistResult == true) Color.Red else Color(0xFF2E7D32),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
 
             Text(
                 text = "Permissions & Security",
+                fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start)
+                modifier = Modifier.align(Alignment.Start),
+                color = Color(0xFF1A1C1E)
             )
 
-            ListItem(
-                headlineContent = { Text("Accessibility Permission") },
-                supportingContent = { Text("Required for 'Prevent' features. Highly Recommended.") },
-                trailingContent = {
-                    Button(onClick = {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }) {
-                        Text("Grant")
-                    }
-                }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            PermissionItem(
+                title = "Accessibility Permission",
+                description = "Required to prevent users from changing settings or uninstalling the app.",
+                action = {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                },
+                actionLabel = "Grant",
+                isEnabled = !isAccessibilityEnabled
             )
 
-            Divider()
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
 
-            PreventionToggle(
+            PreventionToggleItem(
                 label = "Prevent Change",
-                description = "Stops user from changing Private DNS settings.",
+                description = "Stops users from changing the Private DNS settings.",
                 checked = preventChange,
-                onCheckedChange = { viewModel.togglePreventChange(it) },
-                remainingTime = remainingTime
+                onCheckedChange = {
+                    if (it) {
+                        viewModel.togglePreventChange(true)
+                    } else {
+                        pendingToggleType = "change"
+                        viewModel.togglePreventChange(false)
+                        showDialog = true
+                    }
+                },
+                enabled = isAccessibilityEnabled
             )
 
-            PreventionToggle(
+            PreventionToggleItem(
                 label = "Prevent Uninstall",
-                description = "Stops user from uninstalling OpenKahf.",
+                description = "Stops users from uninstalling the OpenKahf app.",
                 checked = preventUninstall,
-                onCheckedChange = { viewModel.togglePreventUninstall(it) },
-                remainingTime = remainingTime
+                onCheckedChange = {
+                    if (it) {
+                        viewModel.togglePreventUninstall(true)
+                    } else {
+                        pendingToggleType = "uninstall"
+                        viewModel.togglePreventUninstall(false)
+                        showDialog = true
+                    }
+                },
+                enabled = isAccessibilityEnabled
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(32.dp))
 
             Text(
-                text = "API Documentation for Developers",
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start)
-            )
-            Text(
-                text = "URL: https://dnsforfamily.com/api/checkHost\n" +
-                        "Parameters: 'hostnames' (string|array)\n" +
-                        "Response: JSON { success, result: { hostname: bool } }",
+                text = buildAnnotatedString {
+                    append("Created and Maintained by ")
+                    withStyle(style = SpanStyle(color = Color(0xFF4A2C7E), fontWeight = FontWeight.Bold)) {
+                        append("Md. Abdullah Bari Asif")
+                    }
+                },
                 fontSize = 12.sp,
-                modifier = Modifier.padding(top = 8.dp)
+                color = Color.Gray,
+                modifier = Modifier.padding(bottom = 16.dp)
             )
         }
     }
 }
 
 @Composable
-fun PreventionToggle(
+fun PermissionItem(title: String, description: String, action: () -> Unit, actionLabel: String, isEnabled: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(text = description, fontSize = 14.sp, color = Color.Gray)
+        }
+        if (isEnabled) {
+            Button(
+                onClick = action,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A2C7E))
+            ) {
+                Text(actionLabel)
+            }
+        } else {
+            Text("Granted", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun PreventionToggleItem(
     label: String,
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
-    remainingTime: Long
+    enabled: Boolean
 ) {
-    ListItem(
-        headlineContent = { Text(label) },
-        supportingContent = {
-            Column {
-                Text(description)
-                if (checked && remainingTime > 0) {
-                    Text("Unlock in: ${remainingTime / 60}m ${remainingTime % 60}s", color = Color.Red)
-                }
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange
-            )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = label, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(text = description, fontSize = 14.sp, color = Color.Gray)
         }
-    )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
+        )
+    }
 }
