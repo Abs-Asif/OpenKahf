@@ -112,9 +112,13 @@ class MainViewModel(
         val nowSeconds = nowMinutes * 60 + now.get(Calendar.SECOND)
 
         fun timeToSeconds(time: String): Int {
-            val parts = time.split(":")
-            if (parts.size != 2) return 0
-            return parts[0].toInt() * 3600 + parts[1].toInt() * 60
+            return try {
+                val parts = time.split(":")
+                if (parts.size != 2) return 0
+                parts[0].toInt() * 3600 + parts[1].toInt() * 60
+            } catch (e: Exception) {
+                0
+            }
         }
 
         var currentWaqt = ""
