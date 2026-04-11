@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
@@ -139,7 +140,7 @@ fun OpenKahfApp(viewModel: MainViewModel) {
                 NavigationBarItem(
                     selected = currentScreen == "prayer",
                     onClick = { currentScreen = "prayer" },
-                    icon = { Icon(painterResource(android.R.drawable.ic_lock_idle_alarm), contentDescription = "Prayer", modifier = Modifier.size(24.dp)) },
+                    icon = { Icon(Icons.Default.AccessTime, contentDescription = "Prayer", modifier = Modifier.size(24.dp)) },
                     label = { Text("Prayer", fontSize = 10.sp) }
                 )
                 NavigationBarItem(
@@ -701,9 +702,13 @@ fun PrayerTimesList(viewModel: MainViewModel, times: Map<String, String>) {
     val waqts = listOf("Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha")
 
     fun timeToMinutes(time: String): Int {
-        val parts = time.split(":")
-        if (parts.size != 2) return 0
-        return parts[0].toInt() * 60 + parts[1].toInt()
+        return try {
+            val parts = time.split(":")
+            if (parts.size != 2) return 0
+            parts[0].toInt() * 60 + parts[1].toInt()
+        } catch (e: Exception) {
+            0
+        }
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
