@@ -11,8 +11,9 @@ android {
         applicationId = "com.open.kahf"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10004101
-        versionName = "1.0.0.04.10.1"
+        val patchVersion = project.findProperty("patchVersion")?.toString() ?: "1"
+        versionCode = 10004101 + patchVersion.toInt()
+        versionName = "1.0.$patchVersion"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -52,6 +53,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
