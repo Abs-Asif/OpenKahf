@@ -9,21 +9,17 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.provider.Settings
+import android.os.PowerManager
+import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -34,41 +30,28 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.foundation.Canvas
-import androidx.compose.material.icons.filled.AccessTime
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var viewModel: MainViewModel
@@ -78,102 +61,304 @@ class MainActivity : ComponentActivity() {
 
         val dnsRepo = DnsStatusRepository()
         val settingsRepo = SettingsRepository(applicationContext)
-        val prayerRepo = PrayerTimesRepository()
         viewModel = ViewModelProvider(
             this,
             object : ViewModelProvider.Factory {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return MainViewModel(dnsRepo, settingsRepo, prayerRepo) as T
+                    return MainViewModel(dnsRepo, settingsRepo) as T
                 }
             }
         )[MainViewModel::class.java]
 
+        viewModel.registerNetworkCallback(this)
+        NotificationWorker.schedule(this)
+
         setContent {
             MaterialTheme {
-                val context = LocalContext.current
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { }
-
-                LaunchedEffect(Unit) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    }
-                }
-
-                OpenKahfApp(viewModel)
+                OpenKahfApp(viewModel, onExit = { finish() })
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        viewModel.unregisterNetworkCallback(this)
     }
 
     override fun onResume() {
         super.onResume()
         viewModel.checkAccessibilityPermission(this)
-        viewModel.checkUsagePermission(this)
         viewModel.checkDnsStatus(this)
-        viewModel.fetchAppUsage(this)
     }
 }
 
 @Composable
-fun OpenKahfApp(viewModel: MainViewModel) {
-    var currentScreen by remember { mutableStateOf("home") }
+fun OpenKahfApp(viewModel: MainViewModel, onExit: () -> Unit) {
+    val context = LocalContext.current
+    val isPinSet by viewModel.isPinSet.collectAsState()
+    var isAuthenticated by remember { mutableStateOf(false) }
+    var permissionsGranted by remember { mutableStateOf(viewModel.areAllPermissionsGranted(context)) }
+    var showExitDialog by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = currentScreen != "home") {
-        currentScreen = "home"
-    }
-
-    Scaffold(
-        bottomBar = {
-            NavigationBar(
-                modifier = Modifier.height(64.dp),
-                containerColor = Color.White,
-                contentColor = Color(0xFF4A2C7E)
-            ) {
-                NavigationBarItem(
-                    selected = currentScreen == "home",
-                    onClick = { currentScreen = "home" },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                    label = { Text("Home", fontSize = 10.sp) }
-                )
-                NavigationBarItem(
-                    selected = currentScreen == "prayer",
-                    onClick = { currentScreen = "prayer" },
-                    icon = { Icon(Icons.Default.AccessTime, contentDescription = "Prayer", modifier = Modifier.size(24.dp)) },
-                    label = { Text("Prayer", fontSize = 10.sp) }
-                )
-                NavigationBarItem(
-                    selected = currentScreen == "usage",
-                    onClick = { currentScreen = "usage" },
-                    icon = { Icon(Icons.Default.DateRange, contentDescription = "Usage") },
-                    label = { Text("Usage", fontSize = 10.sp) }
-                )
-                NavigationBarItem(
-                    selected = currentScreen == "settings",
-                    onClick = { currentScreen = "settings" },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                    label = { Text("Settings", fontSize = 10.sp) }
-                )
+    // Re-check permissions when returning to app
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                permissionsGranted = viewModel.areAllPermissionsGranted(context)
             }
         }
-    ) { innerPadding ->
-        Box(modifier = Modifier.padding(innerPadding)) {
-            AnimatedContent(
-                targetState = currentScreen,
-                transitionSpec = {
-                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+        }
+    }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("Exit") },
+            text = { Text("Are you sure you want to close the app?") },
+            confirmButton = {
+                Button(onClick = onExit) { Text("Exit") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    BackHandler {
+        showExitDialog = true
+    }
+
+    if (!permissionsGranted) {
+        PermissionsOnboardingScreen(viewModel) {
+            permissionsGranted = true
+        }
+    } else if (!isPinSet) {
+        PinSetupScreen(viewModel)
+    } else if (!isAuthenticated) {
+        PinEntryScreen(viewModel) {
+            isAuthenticated = true
+        }
+    } else {
+        HomeScreen(viewModel)
+    }
+}
+
+@Composable
+fun PermissionsOnboardingScreen(viewModel: MainViewModel, onAllGranted: () -> Unit) {
+    val context = LocalContext.current
+    val isAccessibilityEnabled by viewModel.isAccessibilityEnabled.collectAsState()
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+
+    var hasNotificationPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+        )
+    }
+
+    var isIgnoringBatteryOptimizations by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                powerManager.isIgnoringBatteryOptimizations(context.packageName)
+            } else {
+                true
+            }
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasNotificationPermission = isGranted
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+        Column(
+            modifier = Modifier.padding(24.dp).fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Permissions Required", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "To provide full protection, OpenKahf needs the following permissions:",
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                color = Color.Gray
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+
+            PermissionOnboardingItem(
+                title = "Notifications",
+                description = "To alert you when you are not protected.",
+                isGranted = hasNotificationPermission,
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            )
+
+            PermissionOnboardingItem(
+                title = "Accessibility",
+                description = "To prevent unauthorized changes to DNS settings.",
+                isGranted = isAccessibilityEnabled,
+                onClick = {
+                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+            )
+
+            PermissionOnboardingItem(
+                title = "Unrestricted Usage",
+                description = "To prevent the app from being stopped in the background.",
+                isGranted = isIgnoringBatteryOptimizations,
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.height(48.dp))
+
+            Button(
+                onClick = {
+                    if (viewModel.areAllPermissionsGranted(context)) {
+                        onAllGranted()
+                    } else {
+                        Toast.makeText(context, "Please grant all permissions to continue", Toast.LENGTH_SHORT).show()
+                    }
                 },
-                label = "ScreenTransition"
-            ) { screen ->
-                when (screen) {
-                    "home" -> HomeScreen(viewModel)
-                    "prayer" -> PrayerScreen(viewModel)
-                    "usage" -> UsageScreen(viewModel)
-                    "settings" -> SettingsScreen(viewModel)
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Continue")
+            }
+        }
+    }
+}
+
+@Composable
+fun PermissionOnboardingItem(title: String, description: String, isGranted: Boolean, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = if (isGranted) Color(0xFFF0F9F0) else Color(0xFFF8F9FA))
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text(description, fontSize = 12.sp, color = Color.Gray)
+            }
+            if (isGranted) {
+                Icon(
+                    painter = androidx.compose.ui.res.painterResource(android.R.drawable.checkbox_on_background),
+                    contentDescription = "Granted",
+                    tint = Color(0xFF4CAF50)
+                )
+            } else {
+                Button(onClick = onClick, shape = RoundedCornerShape(8.dp)) {
+                    Text("Grant", fontSize = 12.sp)
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun PinSetupScreen(viewModel: MainViewModel) {
+    var pin by remember { mutableStateOf("") }
+    var confirmPin by remember { mutableStateOf("") }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+        Column(
+            modifier = Modifier.padding(24.dp).fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Set 6-digit PIN", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(24.dp))
+            OutlinedTextField(
+                value = pin,
+                onValueChange = { if (it.length <= 6) pin = it },
+                label = { Text("New PIN") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedTextField(
+                value = confirmPin,
+                onValueChange = { if (it.length <= 6) confirmPin = it },
+                label = { Text("Confirm PIN") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = {
+                    if (pin.length == 6 && pin == confirmPin) {
+                        viewModel.setPin(pin)
+                    }
+                },
+                enabled = pin.length == 6 && pin == confirmPin,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Set PIN")
+            }
+        }
+    }
+}
+
+@Composable
+fun PinEntryScreen(viewModel: MainViewModel, onAuthenticated: () -> Unit) {
+    var pin by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+        Column(
+            modifier = Modifier.padding(24.dp).fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Enter PIN", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(24.dp))
+            OutlinedTextField(
+                value = pin,
+                onValueChange = {
+                    if (it.length <= 6) {
+                        pin = it
+                        if (it.length == 6) {
+                            scope.launch {
+                                if (viewModel.verifyPin(it)) {
+                                    onAuthenticated()
+                                } else {
+                                    Toast.makeText(context, "Incorrect PIN", Toast.LENGTH_SHORT).show()
+                                    pin = ""
+                                }
+                            }
+                        }
+                    }
+                },
+                label = { Text("PIN") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
@@ -333,402 +518,195 @@ fun HomeScreen(viewModel: MainViewModel) {
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
+
+            SettingsSection(viewModel)
         }
     }
 }
 
 @Composable
-fun PrayerScreen(viewModel: MainViewModel) {
-    val prayerTimes by viewModel.prayerTimes.collectAsState()
-    val currentWaqtName by viewModel.currentWaqtName.collectAsState()
-    val waqtRemainingTime by viewModel.waqtRemainingTime.collectAsState()
-    val waqtProgress by viewModel.waqtProgress.collectAsState()
-
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color.White
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "Prayer Times",
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF1A1C1E)
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            if (prayerTimes != null) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF4A2C7E))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = currentWaqtName,
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = waqtRemainingTime,
-                            fontSize = 40.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color.White
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        LinearProgressIndicator(
-                            progress = { 1f - waqtProgress },
-                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
-                            color = Color.White,
-                            trackColor = Color.White.copy(alpha = 0.3f)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                PrayerTimesList(viewModel, prayerTimes!!)
-            } else {
-                CircularProgressIndicator(color = Color(0xFF4A2C7E))
-            }
-        }
-    }
-}
-
-@Composable
-fun UsageScreen(viewModel: MainViewModel) {
-    val isUsagePermissionGranted by viewModel.isUsagePermissionGranted.collectAsState()
-    val appUsageData by viewModel.appUsageData.collectAsState()
-    val context = LocalContext.current
-
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color.White
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "App Usage",
-                fontSize = 32.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF1A1C1E)
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            if (!isUsagePermissionGranted) {
-                PermissionItem(
-                    title = "Usage Stats Permission",
-                    description = "Required to show how much time you spend on each app.",
-                    action = {
-                        context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                    },
-                    actionLabel = "Grant",
-                    isEnabled = true
-                )
-            } else {
-                UsageGraph(appUsageData)
-                Spacer(modifier = Modifier.height(24.dp))
-                AppUsageList(appUsageData)
-            }
-        }
-    }
-}
-
-@Composable
-fun UsageGraph(usageData: List<AppUsageInfo>) {
-    if (usageData.isEmpty()) return
-
-    val totalDailyUsage = LongArray(7) { 0L }
-    usageData.forEach { info ->
-        info.dailyUsage.forEachIndexed { index, time ->
-            if (index < 7) totalDailyUsage[index] += time
-        }
-    }
-
-    val maxUsage = totalDailyUsage.maxOrNull() ?: 1L
-
-    Card(
-        modifier = Modifier.fillMaxWidth().height(200.dp),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA))
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Usage Last 7 Days", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Spacer(modifier = Modifier.height(16.dp))
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val spacing = size.width / 7
-                val maxBarHeight = size.height - 20.dp.toPx()
-
-                totalDailyUsage.forEachIndexed { index, usage ->
-                    val barHeight = (usage.toFloat() / maxUsage.toFloat()) * maxBarHeight
-                    val x = index * spacing + spacing / 4
-                    val y = size.height - barHeight
-
-                    drawRect(
-                        color = Color(0xFF4A2C7E),
-                        topLeft = Offset(x, y),
-                        size = Size(spacing / 2, barHeight)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SettingsScreen(viewModel: MainViewModel) {
+fun SettingsSection(viewModel: MainViewModel) {
     val preventChange by viewModel.preventChange.collectAsState()
     val preventUninstall by viewModel.preventUninstall.collectAsState()
-    val remainingTime by viewModel.remainingTime.collectAsState()
     val isAccessibilityEnabled by viewModel.isAccessibilityEnabled.collectAsState()
-    val disableRequestTime by viewModel.disableRequestTime.collectAsState()
 
     val context = LocalContext.current
-    var showDialog by remember { mutableStateOf(false) }
-    var pendingToggleType by remember { mutableStateOf("") }
+    var showChangePinDialog by remember { mutableStateOf(false) }
 
-    if (showDialog) {
-        if (remainingTime > 0) {
-            AlertDialog(
-                onDismissRequest = { /* Prevent dismiss */ },
-                title = { Text("Please Wait") },
-                text = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("You'll have to wait for a minute viewing the popup and wait.")
-                        Spacer(modifier = Modifier.height(16.dp))
-                        LinearProgressIndicator(
-                            progress = { (60L - remainingTime).toFloat() / 60f },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = String.format("%02d:%02d", remainingTime / 60, remainingTime % 60),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
-                        )
-                    }
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            viewModel.cancelDisableRequest()
-                            showDialog = false
-                        }
-                    ) {
-                        Text("Cancel")
-                    }
-                }
-            )
-        } else if (disableRequestTime > 0) {
-            AlertDialog(
-                onDismissRequest = { /* Prevent dismiss */ },
-                title = { Text("Ready") },
-                text = { Text("The wait time is over. You can now turn off the setting.") },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            if (pendingToggleType == "change") {
-                                viewModel.togglePreventChange(false)
-                            } else if (pendingToggleType == "uninstall") {
-                                viewModel.togglePreventUninstall(false)
-                            }
-                            showDialog = false
-                            pendingToggleType = ""
-                        }
-                    ) {
-                        Text("Turn Off Now")
-                    }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            viewModel.cancelDisableRequest()
-                            showDialog = false
-                            pendingToggleType = ""
-                        }
-                    ) {
-                        Text("Cancel")
-                    }
-                }
-            )
-        }
+    if (showChangePinDialog) {
+        ChangePinDialog(viewModel, onDismiss = { showChangePinDialog = false })
     }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color.White
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                text = "Settings",
-                fontSize = 40.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = Color(0xFF1A1C1E)
-            )
+        Spacer(modifier = Modifier.height(32.dp))
 
-            Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "Permissions & Security",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.Start),
+            color = Color(0xFF1A1C1E)
+        )
 
-            Text(
-                text = "Permissions & Security",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start),
-                color = Color(0xFF1A1C1E)
-            )
+        Spacer(modifier = Modifier.height(16.dp))
 
-            Spacer(modifier = Modifier.height(16.dp))
+        PermissionItem(
+            title = "Accessibility Permission",
+            description = "Required to prevent users from changing settings or uninstalling the app.",
+            action = {
+                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            },
+            actionLabel = "Grant",
+            isEnabled = !isAccessibilityEnabled
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasNotificationPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val permissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { }
 
             PermissionItem(
-                title = "Accessibility Permission",
-                description = "Required to prevent users from changing settings or uninstalling the app.",
+                title = "Notification Permission",
+                description = "Required to show DNS status alerts.",
                 action = {
-                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 },
                 actionLabel = "Grant",
-                isEnabled = !isAccessibilityEnabled
+                isEnabled = !hasNotificationPermission
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val hasNotificationPermission = ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED
-
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { }
-
-                PermissionItem(
-                    title = "Notification Permission",
-                    description = "Required to show prayer time alerts.",
-                    action = {
-                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    },
-                    actionLabel = "Grant",
-                    isEnabled = !hasNotificationPermission
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
-            }
-
-            PreventionToggleItem(
-                label = "Prevent Change",
-                description = "Stops users from changing the Private DNS settings.",
-                checked = preventChange,
-                onCheckedChange = {
-                    if (it) {
-                        viewModel.togglePreventChange(true)
-                    } else {
-                        pendingToggleType = "change"
-                        viewModel.togglePreventChange(false)
-                        showDialog = true
-                    }
-                },
-                enabled = isAccessibilityEnabled
-            )
-
-            PreventionToggleItem(
-                label = "Prevent Uninstall",
-                description = "Stops users from uninstalling the OpenKahf app.",
-                checked = preventUninstall,
-                onCheckedChange = {
-                    if (it) {
-                        viewModel.togglePreventUninstall(true)
-                    } else {
-                        pendingToggleType = "uninstall"
-                        viewModel.togglePreventUninstall(false)
-                        showDialog = true
-                    }
-                },
-                enabled = isAccessibilityEnabled
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Text(
-                text = "Support & Links",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Start),
-                color = Color(0xFF1A1C1E)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            OutlinedButton(
-                onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://dnsforfamily.com/"))
-                    context.startActivity(intent)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Official Website", color = Color(0xFF4A2C7E))
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedButton(
-                onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/"))
-                    context.startActivity(intent)
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                Text("Report Issue / GitHub", color = Color(0xFF4A2C7E))
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-            Spacer(modifier = Modifier.height(32.dp))
-
-            val packageInfo = remember {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
-                    } else {
-                        context.packageManager.getPackageInfo(context.packageName, 0)
-                    }
-                } catch (e: Exception) {
-                    null
-                }
-            }
-
-            Text(
-                text = "Version: ${packageInfo?.versionName ?: "Unknown"} (${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) packageInfo?.longVersionCode else packageInfo?.versionCode})",
-                fontSize = 12.sp,
-                color = Color.Gray,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
         }
+
+        PreventionToggleItem(
+            label = "Prevent Change",
+            description = "Stops users from changing the Private DNS settings.",
+            checked = preventChange,
+            onCheckedChange = {
+                viewModel.togglePreventChange(it)
+            },
+            enabled = isAccessibilityEnabled
+        )
+
+        PreventionToggleItem(
+            label = "Prevent Uninstall",
+            description = "Stops users from uninstalling the OpenKahf app.",
+            checked = preventUninstall,
+            onCheckedChange = {
+                viewModel.togglePreventUninstall(it)
+            },
+            enabled = isAccessibilityEnabled
+        )
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
+
+        Button(
+            onClick = { showChangePinDialog = true },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4A2C7E))
+        ) {
+            Text("Change PIN")
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        val packageInfo = remember {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
+                } else {
+                    context.packageManager.getPackageInfo(context.packageName, 0)
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        Text(
+            text = "Version: ${packageInfo?.versionName ?: "Unknown"} (${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) packageInfo?.longVersionCode else packageInfo?.versionCode})",
+            fontSize = 12.sp,
+            color = Color.Gray,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
     }
+}
+
+@Composable
+fun ChangePinDialog(viewModel: MainViewModel, onDismiss: () -> Unit) {
+    var oldPin by remember { mutableStateOf("") }
+    var newPin by remember { mutableStateOf("") }
+    var confirmNewPin by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Change PIN") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = oldPin,
+                    onValueChange = { if (it.length <= 6) oldPin = it },
+                    label = { Text("Old PIN") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = newPin,
+                    onValueChange = { if (it.length <= 6) newPin = it },
+                    label = { Text("New PIN") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    visualTransformation = PasswordVisualTransformation()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = confirmNewPin,
+                    onValueChange = { if (it.length <= 6) confirmNewPin = it },
+                    label = { Text("Confirm New PIN") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    visualTransformation = PasswordVisualTransformation()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    scope.launch {
+                        if (viewModel.verifyPin(oldPin)) {
+                            if (newPin.length == 6 && newPin == confirmNewPin) {
+                                viewModel.setPin(newPin)
+                                onDismiss()
+                                Toast.makeText(context, "PIN changed successfully", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "New PINs do not match or are not 6 digits", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "Incorrect old PIN", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            ) {
+                Text("Change")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
@@ -780,163 +758,5 @@ fun PreventionToggleItem(
             onCheckedChange = onCheckedChange,
             enabled = enabled
         )
-    }
-}
-
-@Composable
-fun PrayerTimesList(viewModel: MainViewModel, times: Map<String, String>) {
-    val waqts = listOf("Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha")
-
-    fun timeToMinutes(time: String): Int {
-        return try {
-            val parts = time.split(":")
-            if (parts.size != 2) return 0
-            parts[0].toInt() * 60 + parts[1].toInt()
-        } catch (e: Exception) {
-            0
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        for (i in waqts.indices) {
-            val waqt = waqts[i]
-            val time = times[waqt] ?: "--:--"
-            val nextWaqt = if (i == waqts.size - 1) waqts[0] else waqts[i + 1]
-            val nextTime = times[nextWaqt] ?: "--:--"
-
-            val minutes = timeToMinutes(time)
-            val nextMinutes = timeToMinutes(nextTime)
-
-            var durationMinutes = nextMinutes - minutes
-            if (durationMinutes < 0) durationMinutes += 24 * 60
-
-            val duration = String.format("%dh %dm", durationMinutes / 60, durationMinutes % 60)
-
-            PrayerTimeItem(viewModel, waqt, time, duration)
-        }
-    }
-}
-
-@Composable
-fun PrayerTimeItem(viewModel: MainViewModel, name: String, time: String, duration: String) {
-    val context = LocalContext.current
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            viewModel.schedulePrayerNotification(context, name, time)
-            Toast.makeText(context, "Notification scheduled for $name", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(context, "Notification permission denied", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA))
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(text = name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(text = viewModel.formatTo12Hour(time), fontSize = 12.sp, color = Color.Gray)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = duration, fontSize = 11.sp, color = Color.Gray)
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(
-                    onClick = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-                                viewModel.schedulePrayerNotification(context, name, time)
-                                Toast.makeText(context, "Notification scheduled for $name", Toast.LENGTH_SHORT).show()
-                            } else {
-                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            }
-                        } else {
-                            viewModel.schedulePrayerNotification(context, name, time)
-                            Toast.makeText(context, "Notification scheduled for $name", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(Icons.Default.Notifications, contentDescription = "Notify", tint = Color(0xFF4A2C7E), modifier = Modifier.size(20.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun AppUsageList(usageData: List<AppUsageInfo>) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        usageData.forEach { info ->
-            AppUsageItem(info)
-        }
-    }
-}
-
-@Composable
-fun AppUsageItem(info: AppUsageInfo) {
-    val hours = info.totalTime / (1000 * 60 * 60)
-    val minutes = (info.totalTime / (1000 * 60)) % 60
-
-    val networkUsageMB = info.networkUsage / (1024 * 1024)
-    val networkUsageGB = info.networkUsage.toDouble() / (1024 * 1024 * 1024)
-    val networkString = if (networkUsageGB >= 1.0) {
-        String.format("%.2f GB", networkUsageGB)
-    } else {
-        "$networkUsageMB MB"
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .animateContentSize(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9FA))
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (info.icon != null) {
-                Image(
-                    bitmap = info.icon.toBitmap().asImageBitmap(),
-                    contentDescription = null,
-                    modifier = Modifier.size(40.dp).clip(CircleShape)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = info.appName,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-                Text(
-                    text = "Data: $networkString",
-                    fontSize = 11.sp,
-                    color = Color.Gray
-                )
-            }
-            Text(
-                text = String.format("%dh %dm", hours, minutes),
-                fontSize = 14.sp,
-                color = Color(0xFF4A2C7E),
-                fontWeight = FontWeight.Bold
-            )
-        }
     }
 }
