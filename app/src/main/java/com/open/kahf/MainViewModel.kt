@@ -5,6 +5,7 @@ import android.app.usage.NetworkStatsManager
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.net.ConnectivityManager
 import android.os.RemoteException
 import android.provider.Settings
@@ -13,8 +14,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -73,6 +76,7 @@ class MainViewModel(
     val appUsageData: StateFlow<List<AppUsageInfo>> = _appUsageData.asStateFlow()
 
     private var waqtUpdateJob: Job? = null
+    private var usageFetchJob: Job? = null
 
     init {
         startPeriodicCheck()
@@ -122,7 +126,6 @@ class MainViewModel(
         }
 
         var currentWaqt = ""
-        var nextWaqt = ""
         var currentWaqtStartTime = 0
         var nextWaqtStartTime = 0
 
@@ -130,13 +133,12 @@ class MainViewModel(
             val waqt = waqts[i]
             val startTime = timeToSeconds(times[waqt] ?: "00:00")
             val nextIndex = (i + 1) % waqts.size
-            var nextStartTime = timeToSeconds(times[waqts[nextIndex]] ?: "00:00")
+            val nextStartTime = timeToSeconds(times[waqts[nextIndex]] ?: "00:00")
 
             if (nextStartTime <= startTime) {
                 // Next waqt is the next day
                 if (nowSeconds >= startTime || nowSeconds < nextStartTime) {
                     currentWaqt = waqt
-                    nextWaqt = waqts[nextIndex]
                     currentWaqtStartTime = startTime
                     nextWaqtStartTime = nextStartTime
                     break
@@ -144,7 +146,6 @@ class MainViewModel(
             } else {
                 if (nowSeconds in startTime until nextStartTime) {
                     currentWaqt = waqt
-                    nextWaqt = waqts[nextIndex]
                     currentWaqtStartTime = startTime
                     nextWaqtStartTime = nextStartTime
                     break
@@ -182,9 +183,21 @@ class MainViewModel(
         }
     }
 
-    fun checkDnsStatus() {
+    fun checkDnsStatus(context: Context? = null) {
         viewModelScope.launch {
-            _isDnsActive.value = dnsRepository.isDnsForFamilyActive()
+            val apiCheck = dnsRepository.isDnsForFamilyActive()
+
+            val systemCheck = if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val activeNetwork = connectivityManager.activeNetwork
+                val linkProperties = connectivityManager.getLinkProperties(activeNetwork)
+                val dnsServer = linkProperties?.privateDnsServerName
+                dnsServer != null && (dnsServer.contains("dnsforfamily.com") || dnsServer.contains("kahfguard.com"))
+            } else {
+                false
+            }
+
+            _isDnsActive.value = apiCheck || systemCheck
         }
     }
 
@@ -260,19 +273,35 @@ class MainViewModel(
     fun fetchAppUsage(context: Context) {
         if (!_isUsagePermissionGranted.value) return
 
-        viewModelScope.launch {
-            val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val networkStatsManager = context.getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
-            val packageManager = context.packageManager
+        usageFetchJob?.cancel()
+        usageFetchJob = viewModelScope.launch {
+            val usageList = withContext(Dispatchers.Default) {
+                val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+                val networkStatsManager = context.getSystemService(Context.NETWORK_STATS_SERVICE) as NetworkStatsManager
+                val packageManager = context.packageManager
 
-            val endTime = System.currentTimeMillis()
-            val startTime = endTime - 7 * 24 * 60 * 60 * 1000 // Last 7 days
+                val endTime = System.currentTimeMillis()
+                val startTime = endTime - 7 * 24 * 60 * 60 * 1000 // Last 7 days
 
-            val usageStats = usageStatsManager.queryAndAggregateUsageStats(startTime, endTime)
+                val usageStatsMap = usageStatsManager.queryAndAggregateUsageStats(startTime, endTime)
 
-            val usageList = usageStats.values
-                .filter { it.totalTimeInForeground > 0 }
-                .map { stat ->
+                // Sort and take top 15 first to avoid unnecessary processing
+                val topApps = usageStatsMap.values
+                    .filter { it.totalTimeInForeground > 0 }
+                    .sortedByDescending { it.totalTimeInForeground }
+                    .take(15)
+
+                // Pre-fetch daily usage for all apps in one go (per day)
+                val dailyStatsMap = mutableMapOf<Int, Map<String, android.app.usage.UsageStats>>()
+                for (i in 0..6) {
+                    val dayEnd = endTime - i * 24 * 60 * 60 * 1000
+                    val dayStart = dayEnd - 24 * 60 * 60 * 1000
+                    val stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, dayStart, dayEnd)
+                        .associateBy { it.packageName }
+                    dailyStatsMap[i] = stats
+                }
+
+                topApps.map { stat ->
                     val appName = try {
                         val appInfo = packageManager.getApplicationInfo(stat.packageName, 0)
                         packageManager.getApplicationLabel(appInfo).toString()
@@ -289,30 +318,26 @@ class MainViewModel(
 
                     val dailyUsage = mutableListOf<Long>()
                     for (i in 6 downTo 0) {
-                        val dayEnd = endTime - i * 24 * 60 * 60 * 1000
-                        val dayStart = dayEnd - 24 * 60 * 60 * 1000
-                        val dailyStats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, dayStart, dayEnd)
-                        val dayTime = dailyStats.find { it.packageName == stat.packageName }?.totalTimeInForeground ?: 0L
+                        val dayTime = dailyStatsMap[i]?.get(stat.packageName)?.totalTimeInForeground ?: 0L
                         dailyUsage.add(dayTime)
                     }
 
                     AppUsageInfo(stat.packageName, appName, icon, stat.totalTimeInForeground, networkUsage, dailyUsage)
                 }
-                .sortedByDescending { it.totalTime }
-                .take(15)
+            }
 
             _appUsageData.value = usageList
         }
     }
 
-    private fun getNetworkUsageForPackage(
+    private suspend fun getNetworkUsageForPackage(
         context: Context,
         networkStatsManager: NetworkStatsManager,
         packageName: String,
         startTime: Long,
         endTime: Long
-    ): Long {
-        return try {
+    ): Long = withContext(Dispatchers.IO) {
+        try {
             val packageManager = context.packageManager
             val uid = packageManager.getPackageUid(packageName, 0)
 

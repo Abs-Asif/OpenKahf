@@ -35,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.filled.AccessTime
@@ -111,7 +112,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         viewModel.checkAccessibilityPermission(this)
         viewModel.checkUsagePermission(this)
-        viewModel.checkDnsStatus()
+        viewModel.checkDnsStatus(this)
         viewModel.fetchAppUsage(this)
     }
 }
@@ -231,8 +232,12 @@ fun HomeScreen(viewModel: MainViewModel) {
                         text = "DNS Status: ${if (isDnsActive) "Active" else "Inactive"}",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF1A1C1E)
+                        color = Color(0xFF1A1C1E),
+                        modifier = Modifier.weight(1f)
                     )
+                    IconButton(onClick = { viewModel.checkDnsStatus(context) }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF4A2C7E))
+                    }
                 }
             }
 
@@ -610,6 +615,29 @@ fun SettingsScreen(viewModel: MainViewModel) {
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val hasNotificationPermission = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { }
+
+                PermissionItem(
+                    title = "Notification Permission",
+                    description = "Required to show prayer time alerts.",
+                    action = {
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    },
+                    actionLabel = "Grant",
+                    isEnabled = !hasNotificationPermission
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color(0xFFE0E0E0))
+            }
+
             PreventionToggleItem(
                 label = "Prevent Change",
                 description = "Stops users from changing the Private DNS settings.",
@@ -640,6 +668,64 @@ fun SettingsScreen(viewModel: MainViewModel) {
                     }
                 },
                 enabled = isAccessibilityEnabled
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Text(
+                text = "Support & Links",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.Start),
+                color = Color(0xFF1A1C1E)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://dnsforfamily.com/"))
+                    context.startActivity(intent)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Official Website", color = Color(0xFF4A2C7E))
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/"))
+                    context.startActivity(intent)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Report Issue / GitHub", color = Color(0xFF4A2C7E))
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(32.dp))
+
+            val packageInfo = remember {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
+                    } else {
+                        context.packageManager.getPackageInfo(context.packageName, 0)
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+            Text(
+                text = "Version: ${packageInfo?.versionName ?: "Unknown"} (${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) packageInfo?.longVersionCode else packageInfo?.versionCode})",
+                fontSize = 12.sp,
+                color = Color.Gray,
+                modifier = Modifier.padding(bottom = 8.dp)
             )
         }
     }
