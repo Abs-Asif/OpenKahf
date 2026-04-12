@@ -3,7 +3,7 @@ package com.open.kahf
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -14,12 +14,14 @@ class SettingsRepository(private val context: Context) {
     companion object {
         val PREVENT_CHANGE = booleanPreferencesKey("prevent_change")
         val PREVENT_UNINSTALL = booleanPreferencesKey("prevent_uninstall")
-        val DISABLE_REQUEST_TIME = longPreferencesKey("disable_request_time")
+        val PIN = stringPreferencesKey("pin")
+        val IS_PIN_SET = booleanPreferencesKey("is_pin_set")
     }
 
     val preventChange: Flow<Boolean> = context.dataStore.data.map { it[PREVENT_CHANGE] ?: false }
     val preventUninstall: Flow<Boolean> = context.dataStore.data.map { it[PREVENT_UNINSTALL] ?: false }
-    val disableRequestTime: Flow<Long> = context.dataStore.data.map { it[DISABLE_REQUEST_TIME] ?: 0L }
+    val pin: Flow<String?> = context.dataStore.data.map { it[PIN] }
+    val isPinSet: Flow<Boolean> = context.dataStore.data.map { it[IS_PIN_SET] ?: false }
 
     suspend fun setPreventChange(enabled: Boolean) {
         context.dataStore.edit { it[PREVENT_CHANGE] = enabled }
@@ -29,7 +31,10 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[PREVENT_UNINSTALL] = enabled }
     }
 
-    suspend fun setDisableRequestTime(time: Long) {
-        context.dataStore.edit { it[DISABLE_REQUEST_TIME] = time }
+    suspend fun setPin(pin: String) {
+        context.dataStore.edit {
+            it[PIN] = pin
+            it[IS_PIN_SET] = true
+        }
     }
 }
