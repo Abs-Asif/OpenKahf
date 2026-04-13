@@ -59,9 +59,9 @@ class MainViewModel(
             val apiCheck = dnsRepository.isDnsForFamilyActive()
 
             val systemCheck = if (context != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                val activeNetwork = connectivityManager.activeNetwork
-                val linkProperties = connectivityManager.getLinkProperties(activeNetwork)
+                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager?
+                val activeNetwork = connectivityManager?.activeNetwork
+                val linkProperties = activeNetwork?.let { connectivityManager?.getLinkProperties(it) }
                 val dnsServer = linkProperties?.privateDnsServerName
                 dnsServer != null && (dnsServer.contains("dnsforfamily.com") || dnsServer.contains("kahfguard.com"))
             } else {

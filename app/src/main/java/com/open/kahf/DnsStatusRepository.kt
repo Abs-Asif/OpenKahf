@@ -8,8 +8,7 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.URLEncoder
 
-class DnsStatusRepository {
-    private val client = OkHttpClient()
+class DnsStatusRepository(private val client: OkHttpClient = NetworkModule.okHttpClient) {
 
     suspend fun isDnsForFamilyActive(): Boolean = withContext(Dispatchers.IO) {
         val request = Request.Builder()
