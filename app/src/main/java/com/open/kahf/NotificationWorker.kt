@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 
 class NotificationWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        val dnsRepo = DnsStatusRepository()
+        val dnsRepo = DnsStatusRepository(NetworkModule.okHttpClient)
         val isDnsActive = dnsRepo.isDnsForFamilyActive()
 
         if (!isDnsActive) {
