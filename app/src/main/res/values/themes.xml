@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.OpenKahf" parent="Theme.MaterialComponents.Light.NoActionBar">
+    <style name="Theme.OpenKahf" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">#4A2C7E</item>
         <item name="android:statusBarColor">?attr/colorPrimary</item>
     </style>
