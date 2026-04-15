@@ -73,26 +73,29 @@ class MainViewModel(
     }
 
     fun registerNetworkCallback(context: Context) {
-        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        if (networkCallback != null) return
+
+        val appContext = context.applicationContext
+        val connectivityManager = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                checkDnsStatus(context)
+                checkDnsStatus(appContext)
             }
 
             override fun onLost(network: Network) {
-                checkDnsStatus(context)
+                checkDnsStatus(appContext)
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                checkDnsStatus(context)
+                checkDnsStatus(appContext)
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) {
-                checkDnsStatus(context)
+                checkDnsStatus(appContext)
             }
         }
 
@@ -101,7 +104,7 @@ class MainViewModel(
 
     fun unregisterNetworkCallback(context: Context) {
         networkCallback?.let {
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val connectivityManager = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             connectivityManager.unregisterNetworkCallback(it)
             networkCallback = null
         }
