@@ -1,18 +1,19 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kapt)
 }
 
 android {
-    namespace = "com.open.kahf"
+    namespace = "com.call.logger"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.open.kahf"
+        applicationId = "com.call.logger"
         minSdk = 24
         targetSdk = 34
         val patchVersion = project.findProperty("patchVersion")?.toString() ?: "1"
-        versionCode = 10004101 + patchVersion.toInt()
+        versionCode = 1
         versionName = "1.0.$patchVersion"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -66,8 +67,10 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.okhttp)
-    implementation(libs.androidx.datastore.preferences)
-    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    kapt(libs.androidx.room.compiler)
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(libs.androidx.ui.test.junit4)
