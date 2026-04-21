@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OpenKahf"
+rootProject.name = "Call logger"
 include(":app")
